@@ -11,271 +11,322 @@ import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import org.apache.log4j.Logger;
+
 import cern.jet.random.Uniform;
 
 public final class AntColonyOptimization {
 
-  private static String TSP_FILE = "files/berlin52.tsp";
-  // greedy
-  public static final double ALPHA = -0.2d;
-  // rapid selection
-  public static final double BETA = 9.6d;
+	private Logger logger = Logger.getLogger(this.getClass().getSimpleName());
 
-  // heuristic parameters
-  public static final double Q = 0.0001d; // somewhere between 0 and 1
-  public static final double PHEROMONE_PERSISTENCE = 0.3d; // between 0 and 1
-  public static final double INITIAL_PHEROMONES = 0.8d; // can be anything
+	static String TSP_FILE = "files/berlin52.tsp";
+	// greedy
+	public static double ALPHA = -0.2d;
+	// rapid selection
+	public static double BETA = 9.6d;
 
-  // use power of 2
-  public static final int NUM_AGENTS = 2048 * 20;
-  private static final int POOL_SIZE = Runtime.getRuntime()
-      .availableProcessors();
+	// heuristic parameters
+	public static double Q = 0.0001d; // somewhere between 0 and 1
+	public static double PHEROMONE_PERSISTENCE = 0.3d; // between 0 and 1
+	public static double INITIAL_PHEROMONES = 0.8d; // can be anything
 
-  private Uniform uniform;
+	// use power of 2
+	private static int NUM_AGENTS = 2048 * 20;
+	private static int POOL_SIZE = Runtime.getRuntime().availableProcessors(); //
 
-  private static final ExecutorService THREAD_POOL = Executors
-      .newFixedThreadPool(POOL_SIZE);
+	private Uniform uniform;
 
-  private final ExecutorCompletionService<WalkedWay> agentCompletionService = new ExecutorCompletionService<WalkedWay>(
-      THREAD_POOL);
+	private static final ExecutorService THREAD_POOL = Executors
+			.newFixedThreadPool(POOL_SIZE);
 
-  final double[][] matrix;
-  final double[][] invertedMatrix;
+	private final ExecutorCompletionService<WalkedWay> agentCompletionService = new ExecutorCompletionService<WalkedWay>(
+			THREAD_POOL);
 
-  private final double[][] pheromones;
-  private final Object[][] mutexes;
+	final double[][] matrix;
+	final double[][] invertedMatrix;
 
-  public AntColonyOptimization() throws IOException {
-    // read the matrix
-    matrix = readMatrixFromFile();
-    invertedMatrix = invertMatrix();
-    pheromones = initializePheromones();
-    mutexes = initializeMutexObjects();
-    // (double min, double max, int seed)
-    uniform = new Uniform(0, matrix.length - 1,
-        (int) System.currentTimeMillis());
-  }
+	private final double[][] pheromones;
+	private final Object[][] mutexes;
 
-  private final Object[][] initializeMutexObjects() {
-    final Object[][] localMatrix = new Object[matrix.length][matrix.length];
-    int rows = matrix.length;
-    for (int columns = 0; columns < matrix.length; columns++) {
-      for (int i = 0; i < rows; i++) {
-        localMatrix[columns][i] = new Object();
-      }
-    }
+	public AntColonyOptimization(int poolSize, double alpha, double beta,
+			double q, double pheromonePersistence, double initialPheromones)
+			throws IOException {
+		this(alpha, beta, q, pheromonePersistence, initialPheromones);
+		AntColonyOptimization.POOL_SIZE = poolSize;
+	}
 
-    return localMatrix;
-  }
+	/**
+	 * This constructor sets the number of agents (ants) and how many threads to
+	 * be used
+	 * 
+	 * @param numAgents
+	 *            - number of workers (ants)
+	 * @param poolSize
+	 *            - number of thread (CPU cores)
+	 * @throws IOException
+	 */
+	public AntColonyOptimization(short poolSize, int... numAgents)
+			throws IOException {
+		this();
+		if (numAgents.length != 0 && numAgents[0] > 0) {
+			AntColonyOptimization.NUM_AGENTS = numAgents[0];
+		}
+		AntColonyOptimization.POOL_SIZE = poolSize;
+	}
 
-  final double readPheromone(int x, int y) {
-    return pheromones[x][y];
-  }
+	/**
+	 * This constructor can set customize Ant Pheromone intensity and the number
+	 * of pheromones which a single ant has.
+	 * 
+	 * @param alpha
+	 *            - heuristic parameter describing how greedy the algorithm is
+	 *            finding it's path across the graph.
+	 * @param beta
+	 *            - heuristic parameter describing how fast the ants are going
+	 *            to select their path.
+	 * @param q
+	 *            - heuristic parameter which is used to calculate the distance
+	 *            the ant took to a given edge.
+	 * @param pheromonePersistence
+	 *            - the pheromone persistence
+	 * @param initialPheromones
+	 *            - initial pheromones
+	 * @throws IOException
+	 */
+	public AntColonyOptimization(double alpha, double beta, double q,
+			double pheromonePersistence, double initialPheromones)
+			throws IOException {
+		this();
+		AntColonyOptimization.ALPHA = alpha;
+		AntColonyOptimization.BETA = beta;
+		AntColonyOptimization.Q = q;
+		AntColonyOptimization.PHEROMONE_PERSISTENCE = pheromonePersistence;
+		AntColonyOptimization.INITIAL_PHEROMONES = initialPheromones;
+	}
 
-  final void adjustPheromone(int x, int y, double newPheromone) {
-    synchronized (mutexes[x][y]) {
-      final double result = calculatePheromones(pheromones[x][y], newPheromone);
-      if (result >= 0.0d) {
-        pheromones[x][y] = result;
-      } else {
-        pheromones[x][y] = 0;
-      }
-    }
-  }
+	/**
+	 * Default AntColonyOptimization constructor. This constructor will set the
+	 * default parameters i've noticed to be optimal.
+	 * 
+	 * @throws IOException
+	 */
+	public AntColonyOptimization() throws IOException {
+		// read the matrix
+		this.matrix = readMatrixFromFile();
+		this.invertedMatrix = invertMatrix();
+		this.pheromones = initializePheromones();
+		this.mutexes = initializeMutexObjects();
+		// (double min, double max, int seed)
+		this.uniform = new Uniform(0, matrix.length - 1,
+				(int) System.currentTimeMillis());
+	}
 
-  private final double calculatePheromones(double current, double newPheromone) {
-    final double result = (1 - AntColonyOptimization.PHEROMONE_PERSISTENCE)
-        * current + newPheromone;
-    return result;
-  }
+	private final Object[][] initializeMutexObjects() {
+		final Object[][] localMatrix = new Object[matrix.length][matrix.length];
+		int rows = matrix.length;
+		for (int columns = 0; columns < matrix.length; columns++) {
+			for (int i = 0; i < rows; i++) {
+				localMatrix[columns][i] = new Object();
+			}
+		}
 
-  private final double[][] initializePheromones() {
-    final double[][] localMatrix = new double[matrix.length][matrix.length];
-    int rows = matrix.length;
-    for (int columns = 0; columns < matrix.length; columns++) {
-      for (int i = 0; i < rows; i++) {
-        localMatrix[columns][i] = INITIAL_PHEROMONES;
-      }
-    }
+		return localMatrix;
+	}
 
-    return localMatrix;
-  }
+	final double readPheromone(int x, int y) {
+		return pheromones[x][y];
+	}
 
-  private final double[][] readMatrixFromFile() throws IOException {
+	final void adjustPheromone(int x, int y, double newPheromone) {
+		synchronized (mutexes[x][y]) {
+			final double result = calculatePheromones(pheromones[x][y],
+					newPheromone);
+			if (result >= 0.0d) {
+				pheromones[x][y] = result;
+			} else {
+				pheromones[x][y] = 0;
+			}
+		}
+	}
 
-    final BufferedReader br = new BufferedReader(new FileReader(new File(
-        TSP_FILE)));
+	private final double calculatePheromones(double current, double newPheromone) {
+		final double result = (1 - AntColonyOptimization.PHEROMONE_PERSISTENCE)
+				* current + newPheromone;
+		return result;
+	}
 
-    final LinkedList<Record> records = new LinkedList<Record>();
+	private final double[][] initializePheromones() {
+		final double[][] localMatrix = new double[matrix.length][matrix.length];
+		int rows = matrix.length;
+		for (int columns = 0; columns < matrix.length; columns++) {
+			for (int i = 0; i < rows; i++) {
+				localMatrix[columns][i] = INITIAL_PHEROMONES;
+			}
+		}
 
-    boolean readAhead = false;
-    String line;
-    while ((line = br.readLine()) != null) {
+		return localMatrix;
+	}
 
-      if (line.equals("EOF")) {
-        break;
-      }
+	private final double[][] readMatrixFromFile() throws IOException {
 
-      if (readAhead) {
-        String[] split = sweepNumbers(line.trim());
-        records.add(new Record(Double.parseDouble(split[1].trim()), Double
-            .parseDouble(split[2].trim())));
-      }
+		final BufferedReader br = new BufferedReader(new FileReader(new File(
+				TSP_FILE)));
 
-      if (line.equals("NODE_COORD_SECTION")) {
-        readAhead = true;
-      }
-    }
+		final LinkedList<Record> records = new LinkedList<Record>();
 
-    br.close();
+		boolean readAhead = false;
+		String line;
+		while ((line = br.readLine()) != null) {
 
-    final double[][] localMatrix = new double[records.size()][records.size()];
+			if (line.equals("EOF")) {
+				break;
+			}
 
-    int rIndex = 0;
-    for (Record r : records) {
-      int hIndex = 0;
-      for (Record h : records) {
-        localMatrix[rIndex][hIndex] = calculateEuclidianDistance(r.x, r.y, h.x,
-            h.y);
-        hIndex++;
-      }
-      rIndex++;
-    }
+			if (readAhead) {
+				String[] split = sweepNumbers(line.trim());
+				records.add(new Record(Double.parseDouble(split[1].trim()),
+						Double.parseDouble(split[2].trim())));
+			}
 
-    return localMatrix;
-  }
+			if (line.equals("NODE_COORD_SECTION")) {
+				readAhead = true;
+			}
+		}
 
-  private final String[] sweepNumbers(String trim) {
-    String[] arr = new String[3];
-    int currentIndex = 0;
-    for (int i = 0; i < trim.length(); i++) {
-      final char c = trim.charAt(i);
-      if ((c) != 32) {
-        for (int f = i + 1; f < trim.length(); f++) {
-          final char x = trim.charAt(f);
-          if ((x) == 32) {
-            arr[currentIndex] = trim.substring(i, f);
-            currentIndex++;
-            break;
-          } else if (f == trim.length() - 1) {
-            arr[currentIndex] = trim.substring(i, trim.length());
-            break;
-          }
-        }
-        i = i + arr[currentIndex - 1].length();
-      }
-    }
-    return arr;
-  }
+		br.close();
 
-  private final double[][] invertMatrix() {
-    double[][] local = new double[matrix.length][matrix.length];
-    for (int i = 0; i < matrix.length; i++) {
-      for (int j = 0; j < matrix.length; j++) {
-        local[i][j] = invertDouble(matrix[i][j]);
-      }
-    }
-    return local;
-  }
+		final double[][] localMatrix = new double[records.size()][records
+				.size()];
 
-  private final double invertDouble(double distance) {
-    if (distance == 0d)
-      return 0d;
-    else
-      return 1.0d / distance;
-  }
+		int rIndex = 0;
+		for (Record r : records) {
+			int hIndex = 0;
+			for (Record h : records) {
+				localMatrix[rIndex][hIndex] = calculateEuclidianDistance(r.x,
+						r.y, h.x, h.y);
+				hIndex++;
+			}
+			rIndex++;
+		}
 
-  private final double calculateEuclidianDistance(double x1, double y1,
-      double x2, double y2) {
-    final double xDiff = x2 - x1;
-    final double yDiff = y2 - y1;
-    return Math.abs((Math.sqrt((xDiff * xDiff) + (yDiff * yDiff))));
-  }
+		return localMatrix;
+	}
 
-  final double start() throws InterruptedException, ExecutionException {
+	private final String[] sweepNumbers(String trim) {
+		String[] arr = new String[3];
+		int currentIndex = 0;
+		for (int i = 0; i < trim.length(); i++) {
+			final char c = trim.charAt(i);
+			if ((c) != 32) {
+				for (int f = i + 1; f < trim.length(); f++) {
+					final char x = trim.charAt(f);
+					if ((x) == 32) {
+						arr[currentIndex] = trim.substring(i, f);
+						currentIndex++;
+						break;
+					} else if (f == trim.length() - 1) {
+						arr[currentIndex] = trim.substring(i, trim.length());
+						break;
+					}
+				}
+				i = i + arr[currentIndex - 1].length();
+			}
+		}
+		return arr;
+	}
 
-    WalkedWay bestDistance = null;
+	private final double[][] invertMatrix() {
+		double[][] local = new double[matrix.length][matrix.length];
+		for (int i = 0; i < matrix.length; i++) {
+			for (int j = 0; j < matrix.length; j++) {
+				local[i][j] = invertDouble(matrix[i][j]);
+			}
+		}
+		return local;
+	}
 
-    int agentsSend = 0;
-    int agentsDone = 0;
-    int agentsWorking = 0;
-    for (int agentNumber = 0; agentNumber < NUM_AGENTS; agentNumber++) {
-      agentCompletionService.submit(new Agent(this,
-          getGaussianDistributionRowIndex()));
-      agentsSend++;
-      agentsWorking++;
-      while (agentsWorking >= POOL_SIZE) {
-        WalkedWay way = agentCompletionService.take().get();
-        if (bestDistance == null || way.distance < bestDistance.distance) {
-          bestDistance = way;
-          System.out.println("Agent returned with new best distance of: "
-              + way.distance);
-        }
-        agentsDone++;
-        agentsWorking--;
-      }
-    }
-    final int left = agentsSend - agentsDone;
-    System.out.println("Waiting for " + left
-        + " agents to finish their random walk!");
+	private final double invertDouble(double distance) {
+		if (distance == 0d)
+			return 0d;
+		else
+			return 1.0d / distance;
+	}
 
-    for (int i = 0; i < left; i++) {
-      WalkedWay way = agentCompletionService.take().get();
-      if (bestDistance == null || way.distance < bestDistance.distance) {
-        bestDistance = way;
-        System.out.println("Agent returned with new best distance of: "
-            + way.distance);
-      }
-    }
+	private final double calculateEuclidianDistance(double x1, double y1,
+			double x2, double y2) {
+		final double xDiff = x2 - x1;
+		final double yDiff = y2 - y1;
+		return Math.abs((Math.sqrt((xDiff * xDiff) + (yDiff * yDiff))));
+	}
 
-    THREAD_POOL.shutdownNow();
-    System.out.println("Found best so far: " + bestDistance.distance);
-    System.out.println(Arrays.toString(bestDistance.way));
+	final double start() throws InterruptedException, ExecutionException {
 
-    return bestDistance.distance;
+		WalkedWay bestDistance = null;
 
-  }
+		int agentsSend = 0;
+		int agentsDone = 0;
+		int agentsWorking = 0;
+		for (int agentNumber = 0; agentNumber < NUM_AGENTS; agentNumber++) {
+			agentCompletionService.submit(new Agent(this,
+					getGaussianDistributionRowIndex()));
+			agentsSend++;
+			agentsWorking++;
+			while (agentsWorking >= POOL_SIZE) {
+				WalkedWay way = agentCompletionService.take().get();
+				if (bestDistance == null
+						|| way.distance < bestDistance.distance) {
+					bestDistance = way;
+					logger.info("Agent returned with new best distance of: "
+							+ way.distance);
+				}
+				agentsDone++;
+				agentsWorking--;
+			}
+		}
+		final int left = agentsSend - agentsDone;
+		logger.info("Waiting for " + left
+				+ " agents to finish their random walk!");
 
-  private final int getGaussianDistributionRowIndex() {
-    return uniform.nextInt();
-  }
+		for (int i = 0; i < left; i++) {
+			WalkedWay way = agentCompletionService.take().get();
+			if (bestDistance == null || way.distance < bestDistance.distance) {
+				bestDistance = way;
+				logger.info("Agent returned with new best distance of: "
+						+ way.distance);
+			}
+		}
 
-  static class Record {
-    double x;
-    double y;
+		THREAD_POOL.shutdownNow();
+		logger.info("Found best so far: " + bestDistance.distance);
+		logger.info(Arrays.toString(bestDistance.way));
 
-    public Record(double x, double y) {
-      super();
-      this.x = x;
-      this.y = y;
-    }
-  }
+		return bestDistance.distance;
 
-  static class WalkedWay {
-    int[] way;
-    double distance;
+	}
 
-    public WalkedWay(int[] way, double distance) {
-      super();
-      this.way = way;
-      this.distance = distance;
-    }
-  }
+	private final int getGaussianDistributionRowIndex() {
+		return uniform.nextInt();
+	}
 
-  public static void main(String[] args) throws IOException,
-      InterruptedException, ExecutionException {
+	static class Record {
+		double x;
+		double y;
 
-    if (args.length > 0) {
-      AntColonyOptimization.TSP_FILE = args[0];
-      System.out.println("Using " + args[0]);
-    }
+		public Record(double x, double y) {
+			super();
+			this.x = x;
+			this.y = y;
+		}
+	}
 
-    long start = System.currentTimeMillis();
-    AntColonyOptimization antColonyOptimization = new AntColonyOptimization();
-    double result = antColonyOptimization.start();
-    System.out
-        .println("Took: " + (System.currentTimeMillis() - start) + " ms!");
-    System.out.println("Result was: " + result);
-  }
+	static class WalkedWay {
+		int[] way;
+		double distance;
 
+		public WalkedWay(int[] way, double distance) {
+			super();
+			this.way = way;
+			this.distance = distance;
+		}
+	}
 }
